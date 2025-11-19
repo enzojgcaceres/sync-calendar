@@ -1,0 +1,22 @@
+# dependencias 
+
+node_modules/
+
+# archivos de entorno
+
+.env
+.env.local  
+.env.development.local
+
+# archivos de logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log* 
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# directorios de build
+dist/   
+build/
+out/

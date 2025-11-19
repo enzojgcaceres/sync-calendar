@@ -1,0 +1,25 @@
+{
+ "name": "calendar-middleware",
+ "version": "1.0.0",
+ "main": "app.js",
+ "private": true,
+ "scripts": {
+   "start": "node app.js",
+   "dev": "nodemon app.js"
+ },
+ "dependencies": {
+   "@google-cloud/local-auth": "^2.1.0",
+   "cors": "^2.8.5",
+   "dayjs": "^1.11.18",
+   "dotenv": "^17.2.3",
+   "express": "^5.1.0",
+   "googleapis": "^105.0.0",
+   "uuid": "^13.0.0"
+ },
+ "devDependencies": {
+   "nodemon": "^3.1.10"
+ }
+}
+
+
+

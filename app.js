@@ -154,74 +154,130 @@ function resolveCalendarIdFromQuery(qs = {}) {
 
 
 
-// Devuelve [{start, end}, ...] con los eventos que ocupan al coach
+// // Devuelve [{start, end}, ...] con los eventos que ocupan al coach
+// async function getBusyFromEventsList(cal, {
+//  calendarId, timeMin, timeMax, coachEmail, fallbackQuery
+// }) {
+//  const items = [];
+//  let pageToken = undefined;
+
+
+//  do {
+//    const resp = await cal.events.list({
+//      calendarId,
+//      timeMin: timeMin.toISOString(),
+//      timeMax: timeMax.toISOString(),
+//      singleEvents: true,          // expande recurrencias
+//      orderBy: 'startTime',
+//      maxResults: 2500,
+//      pageToken,
+//    });
+//    items.push(...(resp.data.items || []));
+//    pageToken = resp.data.nextPageToken;
+//  } while (pageToken);
+
+
+//  // 1) Filtrar por “ocupado” (ignora cancelados y transparentes)
+//  const candidates = items.filter(ev =>
+//    ev.status !== 'cancelled' &&
+//    (ev.transparency || 'opaque') !== 'transparent'
+//  );
+
+
+//  // 2) Mantener solo los que pertenecen al coach
+//  const belongsToCoach = (ev) => {
+//    // a) por attendees (ideal)
+//    const att = Array.isArray(ev.attendees) ? ev.attendees : [];
+//    const attHit = coachEmail
+//      ? att.some(a => (a.email || '').toLowerCase() === coachEmail.toLowerCase())
+//      : false;
+
+
+//    if (attHit) return true;
+
+
+//    // NUEVO: si el creador/organizador es el coach, cuenta como ocupado
+//  const creatorEmail = (ev.creator?.email || ev.organizer?.email || '').toLowerCase();
+//  if (coachEmail && creatorEmail === coachEmail.toLowerCase()) return true;
+
+
+
+
+//    // b) fallback por texto (si aún no agregan attendees)
+//    if (!fallbackQuery) return false;
+//    const hay = (s) => (s || '').toLowerCase().includes(fallbackQuery.toLowerCase());
+//    return hay(ev.summary) || hay(ev.description) || hay(ev.location);
+//  };
+
+
+//  const coachEvents = candidates.filter(belongsToCoach);
+
+
+//  // 3) Normalizar a intervalos busy
+//  const busy = coachEvents.map(ev => {
+//    const start = ev.start?.dateTime || (ev.start?.date ? `${ev.start.date}T00:00:00Z` : null);
+//    const end   = ev.end?.dateTime   || (ev.end?.date   ? `${ev.end.date}T00:00:00Z`   : null);
+//    return (start && end) ? { start, end } : null;
+//  }).filter(Boolean);
+
+
+//  return busy;
+// }
+
 async function getBusyFromEventsList(cal, {
- calendarId, timeMin, timeMax, coachEmail, fallbackQuery
+  calendarId, timeMin, timeMax, coachEmail, fallbackQuery
 }) {
- const items = [];
- let pageToken = undefined;
+  const items = [];
+  let pageToken = undefined;
 
+  do {
+    const resp = await cal.events.list({
+      calendarId,
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 2500,
+      pageToken,
+    });
+    items.push(...(resp.data.items || []));
+    pageToken = resp.data.nextPageToken;
+  } while (pageToken);
 
- do {
-   const resp = await cal.events.list({
-     calendarId,
-     timeMin: timeMin.toISOString(),
-     timeMax: timeMax.toISOString(),
-     singleEvents: true,          // expande recurrencias
-     orderBy: 'startTime',
-     maxResults: 2500,
-     pageToken,
-   });
-   items.push(...(resp.data.items || []));
-   pageToken = resp.data.nextPageToken;
- } while (pageToken);
+  const coachEvents = items.filter(ev => {
+    // 1. Ignorar cancelados
+    if (ev.status === 'cancelled') return false;
+    // 2. Ignorar si el evento está marcado como "Disponible" (Transparency: transparent)
+    if (ev.transparency === 'transparent') return false;
 
+    // 3. Verificar si el coach está realmente ocupado en este evento
+    const attendees = ev.attendees || [];
+    const coachAsAttendee = attendees.find(a => 
+      (a.email || '').toLowerCase() === coachEmail.toLowerCase()
+    );
 
- // 1) Filtrar por “ocupado” (ignora cancelados y transparentes)
- const candidates = items.filter(ev =>
-   ev.status !== 'cancelled' &&
-   (ev.transparency || 'opaque') !== 'transparent'
- );
+    // Si el coach es un invitado y RECHAZÓ, está LIBRE
+    if (coachAsAttendee && coachAsAttendee.responseStatus === 'declined') return false;
 
+    // Si el coach es el organizador o está en la lista de aceptados/pendientes
+    const isOrganizer = (ev.organizer?.email || '').toLowerCase() === coachEmail.toLowerCase();
+    const isAttendee = !!coachAsAttendee;
+    
+    // Fallback de texto (summary)
+    const matchesText = fallbackQuery && (
+      (ev.summary || '').toLowerCase().includes(fallbackQuery.toLowerCase()) ||
+      (ev.description || '').toLowerCase().includes(fallbackQuery.toLowerCase())
+    );
 
- // 2) Mantener solo los que pertenecen al coach
- const belongsToCoach = (ev) => {
-   // a) por attendees (ideal)
-   const att = Array.isArray(ev.attendees) ? ev.attendees : [];
-   const attHit = coachEmail
-     ? att.some(a => (a.email || '').toLowerCase() === coachEmail.toLowerCase())
-     : false;
+    return isOrganizer || isAttendee || matchesText;
+  });
 
-
-   if (attHit) return true;
-
-
-   // NUEVO: si el creador/organizador es el coach, cuenta como ocupado
- const creatorEmail = (ev.creator?.email || ev.organizer?.email || '').toLowerCase();
- if (coachEmail && creatorEmail === coachEmail.toLowerCase()) return true;
-
-
-
-
-   // b) fallback por texto (si aún no agregan attendees)
-   if (!fallbackQuery) return false;
-   const hay = (s) => (s || '').toLowerCase().includes(fallbackQuery.toLowerCase());
-   return hay(ev.summary) || hay(ev.description) || hay(ev.location);
- };
-
-
- const coachEvents = candidates.filter(belongsToCoach);
-
-
- // 3) Normalizar a intervalos busy
- const busy = coachEvents.map(ev => {
-   const start = ev.start?.dateTime || (ev.start?.date ? `${ev.start.date}T00:00:00Z` : null);
-   const end   = ev.end?.dateTime   || (ev.end?.date   ? `${ev.end.date}T00:00:00Z`   : null);
-   return (start && end) ? { start, end } : null;
- }).filter(Boolean);
-
-
- return busy;
+  return coachEvents.map(ev => {
+    // Manejo correcto de fechas "All-day" para evitar desfases de zona horaria
+    const start = ev.start.dateTime || dayjs.tz(ev.start.date, TIMEZONE).startOf('day').toISOString();
+    const end = ev.end.dateTime || dayjs.tz(ev.end.date, TIMEZONE).endOf('day').toISOString();
+    return { start, end };
+  });
 }
 
 
@@ -246,14 +302,25 @@ function parseHoraMatch(s) {
 }
 
 
-/** Si no viene start ISO, arma uno con mes_dia + hora_match (+year) */
-function coerceStartISOFromPieces(q = {}) {
- const md = parseMesDia(q.mes_dia);
- const hm = parseHoraMatch(q.hora_match);
- if (!md || !hm) return null;
- const year = String(q.year || new Date().getUTCFullYear());
- // Mantiene el contrato actual (UTC con Z). Si preferís zona local, lo cambiamos.
- return `${year}-${md.month}-${md.day}T${hm.hh}:${hm.mm}:00Z`;
+  // /** Si no viene start ISO, arma uno con mes_dia + hora_match (+year) */
+  // function coerceStartISOFromPieces(q = {}) {
+  // const md = parseMesDia(q.mes_dia);
+  // const hm = parseHoraMatch(q.hora_match);
+  // if (!md || !hm) return null;
+  // const year = String(q.year || new Date().getUTCFullYear());
+  // // Mantiene el contrato actual (UTC con Z). Si preferís zona local, lo cambiamos.
+  // return `${year}-${md.month}-${md.day}T${hm.hh}:${hm.mm}:00Z`;
+  // }
+
+  function coerceStartISOFromPieces(q = {}) {
+  const md = parseMesDia(q.mes_dia);
+  const hm = parseHoraMatch(q.hora_match);
+  if (!md || !hm) return null;
+  const year = String(q.year || new Date().getUTCFullYear());
+  
+  // USAR TZ en lugar de Z
+  // Esto crea un objeto dayjs en la zona horaria de México antes de convertir a ISO
+  return dayjs.tz(`${year}-${md.month}-${md.day} ${hm.hh}:${hm.mm}:00`, TIMEZONE).toISOString();
 }
 
 

@@ -78,10 +78,19 @@ app.use(express.json());
 */
 
 
-dayjs.extend(isSameOrBefore);
+// dayjs.extend(isSameOrBefore);
+// dayjs.extend(utc);
+// dayjs.extend(timezone);
+// dayjs.extend(isSameOrAfter);
+
+// nueva version ordenada
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.extend(isSameOrBefore);
 dayjs.extend(isSameOrAfter);
+
+// Forzamos que por defecto todo lo que procese dayjs use la zona del club si no se especifica
+dayjs.tz.setDefault(TIMEZONE);
 
 
 // --- Reglas del club (Puerto Vallarta / MX City timezone) ---
@@ -97,22 +106,41 @@ function parseHHMM(s) {
 }
 
 
-// Verifica que [startUTC, endUTC) esté completamente dentro de la ventana operativa del día en tz local
-function isWithinBusinessWindow(startUTC, endUTC, tz) {
- const sLocal = dayjs(startUTC).tz(tz);
- const eLocal = dayjs(endUTC).tz(tz);
- // Deben caer el mismo día local para ser válidos (no se permite cruzar día)
- if (!sLocal.isSame(eLocal, 'day')) return false;
- const dow = sLocal.day(); // 0 = domingo, 6 = sábado
- const isWeekend = (dow === 0 || dow === 6);
- const { start, end } = isWeekend ? BUSINESS_HOURS.weekend : BUSINESS_HOURS.weekday;
- const { h: sh, m: sm } = parseHHMM(start);
- const { h: eh, m: em } = parseHHMM(end);
- const openStart = sLocal.startOf('day').hour(sh).minute(sm);
- const openEnd   = sLocal.startOf('day').hour(eh).minute(em);
- return sLocal.isSameOrAfter(openStart) && eLocal.isSameOrBefore(openEnd);
-}
+// // Verifica que [startUTC, endUTC) esté completamente dentro de la ventana operativa del día en tz local
+// function isWithinBusinessWindow(startUTC, endUTC, tz) {
+//  const sLocal = dayjs(startUTC).tz(tz);
+//  const eLocal = dayjs(endUTC).tz(tz);
+//  // Deben caer el mismo día local para ser válidos (no se permite cruzar día)
+//  if (!sLocal.isSame(eLocal, 'day')) return false;
+//  const dow = sLocal.day(); // 0 = domingo, 6 = sábado
+//  const isWeekend = (dow === 0 || dow === 6);
+//  const { start, end } = isWeekend ? BUSINESS_HOURS.weekend : BUSINESS_HOURS.weekday;
+//  const { h: sh, m: sm } = parseHHMM(start);
+//  const { h: eh, m: em } = parseHHMM(end);
+//  const openStart = sLocal.startOf('day').hour(sh).minute(sm);
+//  const openEnd   = sLocal.startOf('day').hour(eh).minute(em);
+//  return sLocal.isSameOrAfter(openStart) && eLocal.isSameOrBefore(openEnd);
+// }
 
+// --- Mejorada: Validación de ventana operativa ---
+function isWithinBusinessWindow(startUTC, endUTC, tz) {
+  const sLocal = dayjs(startUTC).tz(tz);
+  const eLocal = dayjs(endUTC).tz(tz);
+
+  if (!sLocal.isSame(eLocal, 'day')) return false;
+
+  const dow = sLocal.day(); 
+  const isWeekend = (dow === 0 || dow === 6);
+  const { start, end } = isWeekend ? BUSINESS_HOURS.weekend : BUSINESS_HOURS.weekday;
+  
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  
+  const openStart = sLocal.clone().hour(sh).minute(sm).second(0);
+  const openEnd   = sLocal.clone().hour(eh).minute(em).second(0);
+
+  return sLocal.isSameOrAfter(openStart) && eLocal.isSameOrBefore(openEnd);
+}
 
 // 2. Función de parseo flexible (alias=email, alias=id@group.calendar..., o JSON)
 function parseCoachMap(str) {
@@ -141,16 +169,21 @@ function resolveCoachEmail(qs = {}) {
 
 
 // 3. Resolver calendarId según la query
-function resolveCalendarIdFromQuery(qs = {}) {
- // prioridad 1: calendarId explícito
- if (qs.calendarId && String(qs.calendarId).trim()) return String(qs.calendarId).trim();
- // prioridad 2: coach=Alias → mapeo .env
- const alias = qs.coach && String(qs.coach).trim();
- if (alias && COACH_MAP[alias]) return COACH_MAP[alias];
- // fallback: calendario general
- return GOOGLE_CALENDAR_ID;
-}
+// function resolveCalendarIdFromQuery(qs = {}) {
+//  // prioridad 1: calendarId explícito
+//  if (qs.calendarId && String(qs.calendarId).trim()) return String(qs.calendarId).trim();
+//  // prioridad 2: coach=Alias → mapeo .env
+//  const alias = qs.coach && String(qs.coach).trim();
+//  if (alias && COACH_MAP[alias]) return COACH_MAP[alias];
+//  // fallback: calendario general
+//  return GOOGLE_CALENDAR_ID;
+// }
 
+function resolveCalendarIdFromQuery(qs = {}) {
+ // Siempre usamos el calendario del club por defecto
+ // (donde Wil, Joe y Enzo tienen sus clases)
+ return GOOGLE_CALENDAR_ID; 
+}
 
 
 
@@ -224,15 +257,172 @@ function resolveCalendarIdFromQuery(qs = {}) {
 //  return busy;
 // }
 
+// async function getBusyFromEventsList(cal, {
+//   calendarId, timeMin, timeMax, coachEmail, fallbackQuery
+// }) {
+//   const items = [];
+//   let pageToken = undefined;
+
+//   do {
+//     const resp = await cal.events.list({
+//       calendarId,
+//       timeMin: timeMin.toISOString(),
+//       timeMax: timeMax.toISOString(),
+//       singleEvents: true,
+//       orderBy: 'startTime',
+//       maxResults: 2500,
+//       pageToken,
+//     });
+//     items.push(...(resp.data.items || []));
+//     pageToken = resp.data.nextPageToken;
+//   } while (pageToken);
+
+//   const coachEvents = items.filter(ev => {
+//     // 1. Ignorar cancelados
+//     if (ev.status === 'cancelled') return false;
+//     // 2. Ignorar si el evento está marcado como "Disponible" (Transparency: transparent)
+//     if (ev.transparency === 'transparent') return false;
+
+//     // 3. Verificar si el coach está realmente ocupado en este evento
+//     const attendees = ev.attendees || [];
+//     const coachAsAttendee = attendees.find(a => 
+//       (a.email || '').toLowerCase() === coachEmail.toLowerCase()
+//     );
+
+//     // Si el coach es un invitado y RECHAZÓ, está LIBRE
+//     if (coachAsAttendee && coachAsAttendee.responseStatus === 'declined') return false;
+
+//     // Si el coach es el organizador o está en la lista de aceptados/pendientes
+//     const isOrganizer = (ev.organizer?.email || '').toLowerCase() === coachEmail.toLowerCase();
+//     const isAttendee = !!coachAsAttendee;
+    
+//     // Fallback de texto (summary)
+//     const matchesText = fallbackQuery && (
+//       (ev.summary || '').toLowerCase().includes(fallbackQuery.toLowerCase()) ||
+//       (ev.description || '').toLowerCase().includes(fallbackQuery.toLowerCase())
+//     );
+
+//     return isOrganizer || isAttendee || matchesText;
+//   });
+
+//   return coachEvents.map(ev => {
+//     // Manejo correcto de fechas "All-day" para evitar desfases de zona horaria
+//     const start = ev.start.dateTime || dayjs.tz(ev.start.date, TIMEZONE).startOf('day').toISOString();
+//     const end = ev.end.dateTime || dayjs.tz(ev.end.date, TIMEZONE).endOf('day').toISOString();
+//     return { start, end };
+//   });
+// }
+
+// async function getBusyFromEventsList(cal, {
+//   calendarId, timeMin, timeMax, coachEmail, fallbackQuery
+// }) {
+//   const items = [];
+//   let pageToken = undefined;
+
+//   do {
+//     const resp = await cal.events.list({
+//       calendarId,
+//       timeMin: timeMin.toISOString(),
+//       timeMax: timeMax.toISOString(),
+//       singleEvents: true,
+//       orderBy: 'startTime',
+//       maxResults: 2500,
+//       pageToken,
+//     });
+//     items.push(...(resp.data.items || []));
+//     pageToken = resp.data.nextPageToken;
+//   } while (pageToken);
+
+//   console.log(items)
+
+//   console.log(`DEBUG: Se encontraron ${items.length} eventos totales en el rango.`);
+
+//   const coachEvents = items.filter(ev => {
+//     // 1. Ignorar cancelados
+//     if (ev.status === 'cancelled') return false;
+    
+//     // 2. Ignorar si el evento está marcado explícitamente como "Disponible"
+//     if (ev.transparency === 'transparent') return false;
+
+//     // 3. Lógica inteligente: 
+//     // Si el calendario es el personal del coach (calendarId === coachEmail), 
+//     // TODO lo que hay ahí lo ocupa.
+//     if (calendarId.toLowerCase() === coachEmail.toLowerCase()) return true;
+
+//     // 4. Si es un calendario compartido (ej: el del Club), ahí sí filtramos:
+//     const attendees = ev.attendees || [];
+//     const isAttendee = attendees.some(a => (a.email || '').toLowerCase() === coachEmail.toLowerCase());
+//     const isOrganizer = (ev.organizer?.email || '').toLowerCase() === coachEmail.toLowerCase();
+//     const matchesText = fallbackQuery && (
+//       (ev.summary || '').toLowerCase().includes(fallbackQuery.toLowerCase()) ||
+//       (ev.description || '').toLowerCase().includes(fallbackQuery.toLowerCase())
+//     );
+
+//     return isOrganizer || isAttendee || matchesText;
+//   });
+
+//   return coachEvents.map(ev => {
+//     const start = ev.start.dateTime || dayjs.tz(ev.start.date, TIMEZONE).startOf('day').toISOString();
+//     const end = ev.end.dateTime || dayjs.tz(ev.end.date, TIMEZONE).endOf('day').toISOString();
+//     return { start, end };
+//   });
+// }
+
+// async function getBusyFromEventsList(cal, {
+//   calendarId, timeMin, timeMax, coachEmail, fallbackQuery
+// }) {
+//   const items = [];
+//   let pageToken = undefined;
+
+//   do {
+//     const resp = await cal.events.list({
+//       calendarId, // Ahora sí consultará enzo@... o el ID que toque
+//       timeMin: timeMin.toISOString(),
+//       timeMax: timeMax.toISOString(),
+//       singleEvents: true,
+//       orderBy: 'startTime',
+//       maxResults: 2500,
+//       pageToken,
+//     });
+//     items.push(...(resp.data.items || []));
+//     pageToken = resp.data.nextPageToken;
+//   } while (pageToken);
+
+//   console.log(`DEBUG: Se encontraron ${items.length} eventos en el calendario ${calendarId}`);
+
+//   return items
+//     .filter(ev => {
+//       if (ev.status === 'cancelled') return false;
+//       if (ev.transparency === 'transparent') return false; // "Disponible" en Google
+
+//       // Si el calendario que estamos viendo es el personal del coach, 
+//       // bloqueamos el tiempo sin importar el título.
+//       const isPersonalCalendar = calendarId.toLowerCase() === coachEmail.toLowerCase();
+//       if (isPersonalCalendar) return true;
+
+//       // Si es un calendario grupal, buscamos al coach en el título o invitados
+//       const summary = (ev.summary || '').toLowerCase();
+//       const matchesCoach = fallbackQuery && summary.includes(fallbackQuery.toLowerCase());
+//       const isAttendee = (ev.attendees || []).some(a => a.email?.toLowerCase() === coachEmail.toLowerCase());
+
+//       return matchesCoach || isAttendee;
+//     })
+//     .map(ev => ({
+//       start: ev.start.dateTime || ev.start.date,
+//       end: ev.end.dateTime || ev.end.date
+//     }));
+// }
+
 async function getBusyFromEventsList(cal, {
   calendarId, timeMin, timeMax, coachEmail, fallbackQuery
 }) {
   const items = [];
   let pageToken = undefined;
 
+  // 1. Traer todos los eventos del calendario seleccionado
   do {
     const resp = await cal.events.list({
-      calendarId,
+      calendarId, 
       timeMin: timeMin.toISOString(),
       timeMax: timeMax.toISOString(),
       singleEvents: true,
@@ -244,42 +434,45 @@ async function getBusyFromEventsList(cal, {
     pageToken = resp.data.nextPageToken;
   } while (pageToken);
 
-  const coachEvents = items.filter(ev => {
-    // 1. Ignorar cancelados
-    if (ev.status === 'cancelled') return false;
-    // 2. Ignorar si el evento está marcado como "Disponible" (Transparency: transparent)
-    if (ev.transparency === 'transparent') return false;
+  console.log(`DEBUG: Analizando ${items.length} eventos en el calendario: ${calendarId}`);
 
-    // 3. Verificar si el coach está realmente ocupado en este evento
-    const attendees = ev.attendees || [];
-    const coachAsAttendee = attendees.find(a => 
-      (a.email || '').toLowerCase() === coachEmail.toLowerCase()
-    );
+  return items
+    .filter(ev => {
+      // A. Ignorar eventos cancelados o marcados como "Disponible"
+      if (ev.status === 'cancelled') return false;
+      if (ev.transparency === 'transparent') return false; 
 
-    // Si el coach es un invitado y RECHAZÓ, está LIBRE
-    if (coachAsAttendee && coachAsAttendee.responseStatus === 'declined') return false;
+      // B. Caso especial: Si el calendario es el PERSONAL del coach, TODO lo ocupa.
+      // (Esto es lo que hacía que te funcionara a ti con Enzo)
+      const isPersonalCalendar = calendarId.toLowerCase() === coachEmail.toLowerCase();
+      if (isPersonalCalendar) return true;
 
-    // Si el coach es el organizador o está en la lista de aceptados/pendientes
-    const isOrganizer = (ev.organizer?.email || '').toLowerCase() === coachEmail.toLowerCase();
-    const isAttendee = !!coachAsAttendee;
-    
-    // Fallback de texto (summary)
-    const matchesText = fallbackQuery && (
-      (ev.summary || '').toLowerCase().includes(fallbackQuery.toLowerCase()) ||
-      (ev.description || '').toLowerCase().includes(fallbackQuery.toLowerCase())
-    );
+      // C. Caso Calendario Compartido (Tropical Padel):
+      // El coach está ocupado si:
+      
+      // 1. Es el organizador del evento
+      const isOrganizer = (ev.organizer?.email || '').toLowerCase() === coachEmail.toLowerCase();
+      
+      // 2. Está en la lista de invitados (attendees)
+      const isAttendee = (ev.attendees || []).some(a => 
+        (a.email || '').toLowerCase() === coachEmail.toLowerCase() && 
+        a.responseStatus !== 'declined' // Si rechazó la invitación, está libre
+      );
 
-    return isOrganizer || isAttendee || matchesText;
-  });
+      // 3. Su nombre aparece en el título (fallback por si no lo invitaron formalmente)
+      const summary = (ev.summary || '').toLowerCase();
+      const matchesText = fallbackQuery && summary.includes(fallbackQuery.toLowerCase());
 
-  return coachEvents.map(ev => {
-    // Manejo correcto de fechas "All-day" para evitar desfases de zona horaria
-    const start = ev.start.dateTime || dayjs.tz(ev.start.date, TIMEZONE).startOf('day').toISOString();
-    const end = ev.end.dateTime || dayjs.tz(ev.end.date, TIMEZONE).endOf('day').toISOString();
-    return { start, end };
-  });
+      return isOrganizer || isAttendee || matchesText;
+    })
+    .map(ev => {
+      // Normalizar fechas para evitar errores entre Argentina y México
+      // Si es un evento de todo el día (sin hora), le asignamos el día completo
+      const start = ev.start.dateTime || ev.start.date;
+      const end = ev.end.dateTime || ev.end.date;
+      return { start, end };
+    });
 }
-
 
 function pad2(s) { return String(s || '').padStart(2, '0'); }
 
@@ -312,17 +505,29 @@ function parseHoraMatch(s) {
   // return `${year}-${md.month}-${md.day}T${hm.hh}:${hm.mm}:00Z`;
   // }
 
-  function coerceStartISOFromPieces(q = {}) {
+//   function coerceStartISOFromPieces(q = {}) {
+//   const md = parseMesDia(q.mes_dia);
+//   const hm = parseHoraMatch(q.hora_match);
+//   if (!md || !hm) return null;
+//   const year = String(q.year || new Date().getUTCFullYear());
+  
+//   // USAR TZ en lugar de Z
+//   // Esto crea un objeto dayjs en la zona horaria de México antes de convertir a ISO
+//   return dayjs.tz(`${year}-${md.month}-${md.day} ${hm.hh}:${hm.mm}:00`, TIMEZONE).toISOString();
+// }
+
+// --- Mejorada: Función de construcción de fecha ---
+function coerceStartISOFromPieces(q = {}) {
   const md = parseMesDia(q.mes_dia);
   const hm = parseHoraMatch(q.hora_match);
   if (!md || !hm) return null;
-  const year = String(q.year || new Date().getUTCFullYear());
+  const year = String(q.year || new Date().getFullYear());
   
-  // USAR TZ en lugar de Z
-  // Esto crea un objeto dayjs en la zona horaria de México antes de convertir a ISO
-  return dayjs.tz(`${year}-${md.month}-${md.day} ${hm.hh}:${hm.mm}:00`, TIMEZONE).toISOString();
+  // Creamos la fecha directamente en la zona horaria de México
+  // Formato: YYYY-MM-DD HH:mm:ss
+  const localStr = `${year}-${md.month}-${md.day} ${hm.hh}:${hm.mm}:00`;
+  return dayjs.tz(localStr, TIMEZONE).toISOString(); 
 }
-
 
 
 
@@ -381,26 +586,41 @@ app.get('/availability', async (req, res) => {
 
 
    const gran = Number(q.granularity || 30); // minutos
-   const calendarId = resolveCalendarIdFromQuery(q);
+  //  const calendarId = resolveCalendarIdFromQuery(q);
 
 
    const cal = calendarClient();
    // (freebusy si no pides coach específico)
-   const coachEmail = resolveCoachEmail(q);
+   // const coachEmail = resolveCoachEmail(q);
    const coachNameForDisplay = q.coach || 'Coach';
 
 
-   let busy;
-   if (coachEmail) {
-     // Camino por eventos, filtrando por coach (attendees/creator/organizer)
-     busy = await getBusyFromEventsList(cal, {
-       calendarId: GOOGLE_CALENDAR_ID,
-       timeMin, timeMax,
-       coachEmail,
-       fallbackQuery: q.coach
-     });
-   } else {
-     const fb = await cal.freebusy.query({
+  //  let busy;
+  //  if (coachEmail) {
+  //    // Camino por eventos, filtrando por coach (attendees/creator/organizer)
+  //    busy = await getBusyFromEventsList(cal, {
+  //      calendarId: GOOGLE_CALENDAR_ID,
+  //      timeMin, timeMax,
+  //      coachEmail,
+  //      fallbackQuery: q.coach
+  //    });
+  //  } else {
+    // ... dentro de app.get('/availability' ...
+const calendarId = resolveCalendarIdFromQuery(q); 
+const coachEmail = resolveCoachEmail(q);
+
+let busy;
+if (coachEmail) {
+  // CAMBIO: Pasar 'calendarId' (la variable) no el 'GOOGLE_CALENDAR_ID' fijo
+  busy = await getBusyFromEventsList(cal, {
+    calendarId: calendarId, // <--- CORREGIDO
+    timeMin, 
+    timeMax,
+    coachEmail,
+    fallbackQuery: q.coach
+  });
+} else {  
+    const fb = await cal.freebusy.query({
        requestBody: {
          timeMin: timeMin.toISOString(),
          timeMax: timeMax.toISOString(),
